@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """
 Northwind Dashboard - Streamlit Application
-Replicates the PowerBI dashboard with Snowflake backend.
+Compatible with both local and Streamlit in Snowflake (SiS)
 """
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import snowflake.connector
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-import os
 from datetime import datetime, date
 
 # Page config
 st.set_page_config(
     page_title="Northwind Dashboard",
-    page_icon="📊",
+    page_icon="chart_with_upwards_trend",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -57,52 +53,80 @@ st.markdown("""
 # Database configuration
 DB_SUFFIX = "478908"
 SNOWFLAKE_DATABASE = f"NORTHWIND_{DB_SUFFIX}"
+SNOWFLAKE_SCHEMA = "PUBLIC"
+
+def is_running_in_snowflake() -> bool:
+    """Detect if running inside Streamlit in Snowflake."""
+    try:
+        from snowflake.snowpark.context import get_active_session
+        get_active_session()
+        return True
+    except:
+        return False
 
 @st.cache_resource
-def get_snowflake_connection():
-    """Create Snowflake connection."""
-    import tomllib
-    
-    config_path = os.path.expanduser("~/.snowflake/connections.toml")
-    with open(config_path, "rb") as f:
-        config = tomllib.load(f)
-    
-    sf_config = config["snowvation_playground"]
-    
-    private_key_path = sf_config["private_key_file"]
-    with open(private_key_path, "rb") as f:
-        private_key = serialization.load_pem_private_key(
-            f.read(), password=None, backend=default_backend()
+def get_connection():
+    """Get Snowflake connection - works locally and in SiS."""
+    if is_running_in_snowflake():
+        from snowflake.snowpark.context import get_active_session
+        return get_active_session()
+    else:
+        import snowflake.connector
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        import toml
+        import os
+        
+        config_path = os.path.expanduser("~/.snowflake/connections.toml")
+        config = toml.load(config_path)
+        sf_config = config["snowvation_playground"]
+        
+        private_key_path = sf_config["private_key_file"]
+        if not private_key_path.startswith("/home"):
+            private_key_path = os.path.expanduser("~" + private_key_path)
+        with open(private_key_path, "rb") as f:
+            private_key = serialization.load_pem_private_key(
+                f.read(), password=None, backend=default_backend()
+            )
+        
+        private_key_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
         )
-    
-    private_key_bytes = private_key.private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    
-    return snowflake.connector.connect(
-        account=sf_config["account"],
-        user=sf_config["user"],
-        private_key=private_key_bytes,
-        role=sf_config["role"],
-        warehouse=sf_config["warehouse"],
-        database=SNOWFLAKE_DATABASE,
-        schema="PUBLIC"
-    )
+        
+        return snowflake.connector.connect(
+            account=sf_config["account"],
+            user=sf_config["user"],
+            private_key=private_key_bytes,
+            role=sf_config["role"],
+            warehouse=sf_config["warehouse"],
+            database=SNOWFLAKE_DATABASE,
+            schema="PUBLIC"
+        )
+
+def query_to_df(query: str) -> pd.DataFrame:
+    """Execute query and return DataFrame - works in both environments."""
+    conn = get_connection()
+    if is_running_in_snowflake():
+        return conn.sql(query).to_pandas()
+    else:
+        return pd.read_sql(query, conn)
+
+def get_table_ref(table_name: str) -> str:
+    """Get fully qualified table reference for SiS compatibility."""
+    if is_running_in_snowflake():
+        return f"{SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{table_name}"
+    return table_name
 
 @st.cache_data(ttl=300)
 def load_data():
     """Load data from Snowflake."""
-    conn = get_snowflake_connection()
-    
-    query = """
-    SELECT * FROM ORDER_DETAILS_VIEW
-    """
-    df = pd.read_sql(query, conn)
+    view_ref = get_table_ref("ORDER_DETAILS_VIEW")
+    query = f"SELECT * FROM {view_ref}"
+    df = query_to_df(query)
     df.columns = df.columns.str.lower()
     
-    # Convert dates
     for col in ["order_date", "shipped_date", "hire_date"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col])
@@ -112,9 +136,9 @@ def load_data():
 @st.cache_data(ttl=300)
 def load_products():
     """Load products data."""
-    conn = get_snowflake_connection()
-    query = "SELECT * FROM PRODUCT_VIEW"
-    df = pd.read_sql(query, conn)
+    view_ref = get_table_ref("PRODUCT_VIEW")
+    query = f"SELECT * FROM {view_ref}"
+    df = query_to_df(query)
     df.columns = df.columns.str.lower()
     return df
 
@@ -127,40 +151,25 @@ def format_number(num, prefix=""):
     else:
         return f"{prefix}{num:.0f}"
 
-def render_kpi_card(value, label, sparkline_data=None):
-    """Render a KPI card with optional sparkline."""
-    formatted = format_number(value)
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{formatted}</div>
-        <div class="metric-label">{label}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
 def render_sidebar_filters(df):
     """Render sidebar filters."""
     st.sidebar.markdown("### Filters")
     
-    # Category filter
     categories = ["All"] + sorted(df["category_name"].dropna().unique().tolist())
     selected_category = st.sidebar.selectbox("Category Name", categories)
     
-    # Product filter
     if selected_category != "All":
         products = ["All"] + sorted(df[df["category_name"] == selected_category]["product_name"].dropna().unique().tolist())
     else:
         products = ["All"] + sorted(df["product_name"].dropna().unique().tolist())
     selected_product = st.sidebar.selectbox("Product Name", products)
     
-    # Country filter
     countries = ["All"] + sorted(df["customer_country"].dropna().unique().tolist())
     selected_country = st.sidebar.selectbox("Country", countries)
     
-    # Employee filter
     employees = ["All"] + sorted(df["employee_name"].dropna().unique().tolist())
     selected_employee = st.sidebar.selectbox("Employee Name", employees)
     
-    # Date range
     min_date = df["order_date"].min().date()
     max_date = df["order_date"].max().date()
     date_range = st.sidebar.date_input(
@@ -207,7 +216,6 @@ def overview_page(df, filters):
     """Render Overview page."""
     filtered = apply_filters(df, filters)
     
-    # KPI Row
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     gross_revenue = filtered["gross_revenue"].sum()
@@ -232,7 +240,6 @@ def overview_page(df, filters):
     
     st.markdown("---")
     
-    # Charts row
     col1, col2 = st.columns(2)
     
     with col1:
@@ -285,7 +292,6 @@ def overview_page(df, filters):
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # Bottom chart
     st.markdown("<div class="section-header">Average Days to Ship by Shipping Company</div>", unsafe_allow_html=True)
     shipping = filtered.groupby("shipping_company")["days_to_ship"].mean().reset_index()
     shipping = shipping.sort_values("days_to_ship", ascending=True)
@@ -319,7 +325,6 @@ def category_product_page(df, filters):
         product_orders = filtered.groupby("product_name")["order_id"].nunique().reset_index()
         product_orders.columns = ["Product Name", "Orders"]
         
-        # Top 5
         st.markdown("**Top 5 Products by order**")
         top5 = product_orders.nlargest(5, "Orders")
         fig = px.bar(top5, x="Orders", y="Product Name", orientation="h", color_discrete_sequence=["#70ad47"])
@@ -327,7 +332,6 @@ def category_product_page(df, filters):
         fig.update_traces(texttemplate="%{x}", textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
         
-        # Bottom 5
         st.markdown("**Bottom 5 Products by order**")
         bottom5 = product_orders.nsmallest(5, "Orders")
         fig = px.bar(bottom5, x="Orders", y="Product Name", orientation="h", color_discrete_sequence=["#ed7d31"])
@@ -347,14 +351,12 @@ def category_product_page(df, filters):
         }).reset_index()
         category_perf.columns = ["Category Name", "Orders", "Quantity", "Gross Revenue", "Discount ($)", "Net Revenue"]
         
-        # Add totals
         totals = category_perf.sum(numeric_only=True)
         totals["Category Name"] = "Total"
         category_perf = pd.concat([category_perf, pd.DataFrame([totals])], ignore_index=True)
         
         st.dataframe(category_perf, use_container_width=True, height=400)
     
-    # Bottom section
     col1, col2 = st.columns(2)
     
     with col1:
@@ -404,7 +406,6 @@ def employees_page(df, filters):
         emp_orders = filtered.groupby("employee_name")["order_id"].nunique().reset_index()
         emp_orders.columns = ["Employee Name", "Orders"]
         
-        # Top 5
         st.markdown("**Top 5 Employees by order**")
         top5 = emp_orders.nlargest(5, "Orders")
         fig = px.bar(top5, x="Orders", y="Employee Name", orientation="h", color_discrete_sequence=["#70ad47"])
@@ -412,7 +413,6 @@ def employees_page(df, filters):
         fig.update_traces(texttemplate="%{x}", textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
         
-        # Bottom 5
         st.markdown("**Bottom 5 Employees by orders**")
         bottom5 = emp_orders.nsmallest(5, "Orders")
         fig = px.bar(bottom5, x="Orders", y="Employee Name", orientation="h", color_discrete_sequence=["#ed7d31"])
@@ -438,7 +438,6 @@ def employees_page(df, filters):
         
         st.dataframe(title_perf, use_container_width=True, height=300)
     
-    # Bottom charts
     col1, col2 = st.columns(2)
     
     with col1:
@@ -487,7 +486,6 @@ def employees_page(df, filters):
         st.plotly_chart(fig, use_container_width=True)
 
 def main():
-    # Title
     st.markdown("""
     <div style="background: linear-gradient(90deg, #1f4e79 0%, #2e75b6 100%); 
                 padding: 20px; margin-bottom: 20px; border-radius: 5px;">
@@ -495,7 +493,6 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Load data
     try:
         df = load_data()
     except Exception as e:
@@ -503,7 +500,6 @@ def main():
         st.info("Please run the migration script first: python scripts/migrate_to_snowflake.py")
         return
     
-    # Sidebar navigation
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Select Page",
@@ -511,10 +507,8 @@ def main():
         label_visibility="collapsed"
     )
     
-    # Filters
     filters = render_sidebar_filters(df)
     
-    # Render selected page
     if page == "Overview":
         overview_page(df, filters)
     elif page == "Category and Product":

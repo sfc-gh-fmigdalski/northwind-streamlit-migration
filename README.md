@@ -55,5 +55,31 @@ uv sync
 ### Migration
 uv run python scripts/migrate_to_snowflake.py
 
-### Run Streamlit App
+### Verify Migration
+uv run python scripts/verify_migration.py
+
+### Run Streamlit App (Local)
 uv run streamlit run streamlit_app/app.py
+
+**Local URL**: http://localhost:8510
+
+## Snowflake Deployment
+
+The app is deployed to Snowflake as Streamlit in Snowflake (SiS).
+
+**Snowflake Streamlit App URL**:
+https://app.snowflake.com/sfengineering/ai_powered_playground/#/streamlit-apps/NORTHWIND_478908.PUBLIC.NORTHWIND_DASHBOARD
+
+## Verification Results
+
+### Row Count Verification
+All tables verified with matching row counts between PostgreSQL and Snowflake.
+
+### Key Metrics Verification
+| Metric | PostgreSQL | Snowflake | Match |
+|--------|------------|-----------|-------|
+| Gross Revenue | 1,354,458.59 | 1,354,458.59 | OK |
+| Discount | 88,665.55 | 88,665.55 | OK |
+| Net Revenue | 1,265,793.04 | 1,265,793.04 | OK |
+| Orders | 830 | 830 | OK |
+| Quantity | 51,317 | 51,317 | OK |
