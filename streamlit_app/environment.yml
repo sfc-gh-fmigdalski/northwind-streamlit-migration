@@ -1,0 +1,9 @@
+name: streamlit
+channels:
+  - snowflake
+dependencies:
+  - streamlit
+  - pandas
+  - plotly
+  - numpy
+  - snowflake-snowpark-python

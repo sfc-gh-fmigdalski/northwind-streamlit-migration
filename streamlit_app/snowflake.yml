@@ -1,0 +1,6 @@
+definition_version: 1
+streamlit:
+  name: northwind_dashboard
+  main_file: app.py
+  env_file: environment.yml
+  query_warehouse: unit_tester_warehouse
